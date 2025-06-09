@@ -8,7 +8,6 @@ import "../src/My10BInvestmentPlatform.sol";
 contract DeployMy10B is Script {
     function run() external {
         uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
-        address treasury = vm.envAddress("TREASURY_ADDRESS");
         
         vm.startBroadcast(deployerPrivateKey);
         
@@ -18,8 +17,7 @@ contract DeployMy10B is Script {
         
         // Deploy platform
         My10BInvestmentPlatform platform = new My10BInvestmentPlatform(
-            address(token),
-            treasury
+            address(token)
         );
         console.log("My10BInvestmentPlatform deployed at:", address(platform));
         

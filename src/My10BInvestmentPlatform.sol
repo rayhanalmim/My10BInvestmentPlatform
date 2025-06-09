@@ -13,8 +13,7 @@ import {My10BToken} from "./My10BToken.sol";
 /**
  * @title My10BInvestmentPlatform
  * @notice Handles user investments and authorised withdrawals for the My10Billion ecosystem.
- *         The contract purposefully limits its scope to deposits and custodial withdrawals
- *         (authorised off-chain via signatures) until full decentralisation is introduced.
+ *         Users can invest using MY10B tokens without fees and withdraw with proper authorization.
  * @dev    Security-first architecture: pull-payments, re-entrancy guards, custom errors, role based auth.
  */
 contract My10BInvestmentPlatform is EIP712, AccessControl, Pausable, ReentrancyGuard {
@@ -24,15 +23,11 @@ contract My10BInvestmentPlatform is EIP712, AccessControl, Pausable, ReentrancyG
                                ROLES
     //////////////////////////////////////////////////////////////*/
     bytes32 public constant WITHDRAWAL_SIGNER_ROLE = keccak256("WITHDRAWAL_SIGNER_ROLE");
-    bytes32 public constant TREASURY_ROLE         = keccak256("TREASURY_ROLE");
 
     /*//////////////////////////////////////////////////////////////
                                STATE
     //////////////////////////////////////////////////////////////*/
     IERC20 public immutable my10bToken;        // ERC-20 accepted for deposits / withdrawals
-    address public immutable treasury;         // Fee destination
-
-    uint16 public constant FEE_BPS = 250;      // 2.5 % expressed in basis points (parts per 10_000)
 
     uint256 public withdrawalNonce;            // Monotonically increasing, prevents signature replay
 
@@ -42,58 +37,37 @@ contract My10BInvestmentPlatform is EIP712, AccessControl, Pausable, ReentrancyG
     error InvalidAmount();
     error DeadlineExpired();
     error InvalidSignature();
-    error TransferFailed();
 
     /*//////////////////////////////////////////////////////////////
                                EVENTS
     //////////////////////////////////////////////////////////////*/
-    event InvestETH(address indexed user, uint256 amount, uint256 fee);
-    event InvestToken(address indexed user, uint256 amount, uint256 fee);
+    event InvestToken(address indexed user, uint256 amount);
     event WithdrawToken(address indexed user, uint256 amount, uint256 nonce);
-    event TreasuryWithdrawETH(address indexed treasury, uint256 amount);
 
     /*//////////////////////////////////////////////////////////////
                             INITIALISATION
     //////////////////////////////////////////////////////////////*/
-    constructor(address _token, address _treasury) EIP712("My10BInvestmentPlatform", "1") {
-        require(_token != address(0) && _treasury != address(0), "Zero address");
+    constructor(address _token) EIP712("My10BInvestmentPlatform", "1") {
+        require(_token != address(0), "Zero address");
         my10bToken = IERC20(_token);
-        treasury   = _treasury;
 
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
         _grantRole(WITHDRAWAL_SIGNER_ROLE, msg.sender);
-        _grantRole(TREASURY_ROLE, _treasury);
     }
 
     /*//////////////////////////////////////////////////////////////
                         USER-FACING: INVESTMENTS
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice Deposit ETH into the platform. A platform fee is siphoned to treasury.
-    function investWithETH() external payable nonReentrant whenNotPaused {
-        uint256 amount = msg.value;
-        if (amount == 0) revert InvalidAmount();
-
-        uint256 fee = (amount * FEE_BPS) / 10_000;
-        _forwardETH(treasury, fee);
-
-        emit InvestETH(msg.sender, amount - fee, fee);
-        // Remaining ETH kept in contract custody (could be bridged off-chain)
-    }
-
-    /// @notice Deposit My10B tokens into the platform. A platform fee is siphoned to treasury.
-    /// @param amount The full amount of tokens the user wishes to deposit.
+    /// @notice Deposit My10B tokens into the platform without any fees.
+    /// @param amount The amount of tokens the user wishes to deposit.
     function investWithToken(uint256 amount) external nonReentrant whenNotPaused {
         if (amount == 0) revert InvalidAmount();
 
-        uint256 fee = (amount * FEE_BPS) / 10_000;
-        uint256 net = amount - fee;
+        // Transfer tokens from user to platform
+        my10bToken.safeTransferFrom(msg.sender, address(this), amount);
 
-        // Pull all tokens
-        my10bToken.safeTransferFrom(msg.sender, address(this), net);
-        if (fee != 0) my10bToken.safeTransferFrom(msg.sender, treasury, fee);
-
-        emit InvestToken(msg.sender, net, fee);
+        emit InvestToken(msg.sender, amount);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -101,7 +75,7 @@ contract My10BInvestmentPlatform is EIP712, AccessControl, Pausable, ReentrancyG
     //////////////////////////////////////////////////////////////*/
 
     /// @notice Withdraw My10B tokens previously deposited. Must be authorised by an off-chain signer.
-    /// @param amount   Net token amount user will receive.
+    /// @param amount   Token amount user will receive.
     /// @param deadline Signature validity deadline (unix timestamp).
     /// @param sig      Off-chain signature from authorised signer.
     function withdrawToken(uint256 amount, uint256 deadline, bytes calldata sig)
@@ -134,15 +108,8 @@ contract My10BInvestmentPlatform is EIP712, AccessControl, Pausable, ReentrancyG
     }
 
     /*//////////////////////////////////////////////////////////////
-                           ADMIN / TREASURY
+                                ADMIN
     //////////////////////////////////////////////////////////////*/
-
-    /// @notice Allows the treasury to sweep accumulated ETH fees.
-    /// @param amount Amount of ETH to withdraw.
-    function treasuryWithdrawETH(uint256 amount) external nonReentrant onlyRole(TREASURY_ROLE) {
-        _forwardETH(treasury, amount);
-        emit TreasuryWithdrawETH(treasury, amount);
-    }
 
     /// @notice Pause the contract, disabling deposits / withdrawals.
     function pause() external onlyRole(DEFAULT_ADMIN_ROLE) {
@@ -155,25 +122,16 @@ contract My10BInvestmentPlatform is EIP712, AccessControl, Pausable, ReentrancyG
     }
 
     /*//////////////////////////////////////////////////////////////
-                           INTERNAL LOGIC
+                               UTILITIES
     //////////////////////////////////////////////////////////////*/
 
-    function _forwardETH(address to, uint256 amount) internal {
-        if (amount == 0) return;
-        (bool success, ) = to.call{value: amount}("");
-        if (!success) revert TransferFailed();
-    }
-
-    /*//////////////////////////////////////////////////////////////
-                               FALLBACKS
-    //////////////////////////////////////////////////////////////*/
-    receive() external payable {
-        // Accept plain ETH transfers (e.g., refunds) without accounting.
-    }
-
-    fallback() external payable {}
-
+    /// @notice Get the EIP-712 domain separator for off-chain signing.
     function DOMAIN_SEPARATOR() external view returns (bytes32) {
         return _domainSeparatorV4();
+    }
+
+    /// @notice Get the current balance of MY10B tokens held by the platform.
+    function platformBalance() external view returns (uint256) {
+        return my10bToken.balanceOf(address(this));
     }
 }

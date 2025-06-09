@@ -11,10 +11,8 @@ contract My10BPlatformTest is Test {
     address public admin;
     address public user1 = address(2);
     address public user2 = address(3);
-    address public treasury = address(4);
     
     uint256 adminPrivateKey = 0xABCD;
-    uint256 platformFee = 250; // 2.5%
     
     function setUp() public {
         admin = vm.addr(adminPrivateKey);
@@ -22,7 +20,7 @@ contract My10BPlatformTest is Test {
         
         // Deploy contracts
         token = new My10BToken();
-        platform = new My10BInvestmentPlatform(address(token), treasury);
+        platform = new My10BInvestmentPlatform(address(token));
         
         // Setup roles
         bytes32 withdrawalSignerRole = platform.WITHDRAWAL_SIGNER_ROLE();
@@ -35,33 +33,16 @@ contract My10BPlatformTest is Test {
         vm.stopPrank();
     }
     
-    function testInvestWithETH() public {
-        uint256 investAmount = 1 ether;
-        uint256 expectedFee = (investAmount * platformFee) / 10000;
-        uint256 expectedNet = investAmount - expectedFee;
-        
-        uint256 treasuryBalanceBefore = treasury.balance;
-        
-        vm.deal(user1, investAmount);
-        vm.prank(user1);
-        platform.investWithETH{value: investAmount}();
-        
-        assertEq(treasury.balance - treasuryBalanceBefore, expectedFee);
-        assertEq(address(platform).balance, expectedNet);
-    }
-    
     function testInvestWithToken() public {
         uint256 investAmount = 100 ether;
-        uint256 expectedFee = (investAmount * platformFee) / 10000;
-        uint256 expectedNet = investAmount - expectedFee;
         
         vm.startPrank(user1);
         token.approve(address(platform), investAmount);
         platform.investWithToken(investAmount);
         vm.stopPrank();
         
-        assertEq(token.balanceOf(address(platform)), expectedNet);
-        assertEq(token.balanceOf(treasury), expectedFee);
+        assertEq(platform.platformBalance(), investAmount);
+        assertEq(token.balanceOf(address(platform)), investAmount);
         assertEq(token.balanceOf(user1), 1000 ether - investAmount);
     }
     
@@ -81,12 +62,12 @@ contract My10BPlatformTest is Test {
         
         bytes32 structHash = keccak256(abi.encode(
             keccak256("Withdraw(address user,uint256 amount,uint256 deadline,uint256 nonce)"),
-            user1,
-            withdrawAmount,
-            deadline,
+            user1, 
+            withdrawAmount, 
+            deadline, 
             nonce
         ));
-
+        
         bytes32 digest = keccak256(abi.encodePacked("\x19\x01", platform.DOMAIN_SEPARATOR(), structHash));
 
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(adminPrivateKey, digest);
@@ -98,6 +79,7 @@ contract My10BPlatformTest is Test {
         platform.withdrawToken(withdrawAmount, deadline, signature);
         
         assertEq(token.balanceOf(user1) - userBalanceBefore, withdrawAmount);
+        assertEq(platform.platformBalance(), investAmount - withdrawAmount);
     }
     
     function testPauseFunctionality() public {
@@ -117,5 +99,22 @@ contract My10BPlatformTest is Test {
         token.approve(address(platform), 100 ether);
         platform.investWithToken(100 ether);
         vm.stopPrank();
+    }
+
+    function testInvalidAmount() public {
+        vm.prank(user1);
+        vm.expectRevert(abi.encodeWithSignature("InvalidAmount()"));
+        platform.investWithToken(0);
+    }
+
+    function testPlatformBalance() public {
+        uint256 investAmount = 250 ether;
+        
+        vm.startPrank(user1);
+        token.approve(address(platform), investAmount);
+        platform.investWithToken(investAmount);
+        vm.stopPrank();
+        
+        assertEq(platform.platformBalance(), investAmount);
     }
 }
